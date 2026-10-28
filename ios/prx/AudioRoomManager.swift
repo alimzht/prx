@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import LiveKit
+import UIKit
 
 @MainActor
 final class AudioRoomManager: ObservableObject {
@@ -16,6 +17,11 @@ final class AudioRoomManager: ObservableObject {
     private var room: Room?
     private let gate = NoiseGate()
     private var levelTimer: Timer?
+    // nil until the first refresh in a room, so joining a room full of people doesn't chime.
+    private var knownRemoteIDs: Set<String>?
+    // AVAudioPlayer, not system sounds: those are muted by the silent switch, which gamers often have on.
+    private let joinSound = AudioRoomManager.loadSound("join")
+    private let leaveSound = AudioRoomManager.loadSound("leave")
     // Room holds its delegates weakly, so we keep the observer alive here.
     private lazy var observer = RoomObserver { [weak self] room in
         Task { @MainActor [weak self] in self?.refresh(room) }
@@ -31,6 +37,13 @@ final class AudioRoomManager: ObservableObject {
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let rawType = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             Task { @MainActor [weak self] in self?.handleInterruption(rawType) }
+        }
+        // iOS doesn't always post .ended; opening the app again is the fallback that brings sound back.
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.room != nil, !AudioManager.shared.isEngineRunning else { return }
+                self.restartAudio()
+            }
         }
     }
 
@@ -52,6 +65,8 @@ final class AudioRoomManager: ObservableObject {
             // Apple voice processing (VPIO) brings back ducking and HFP, so WebRTC's software processing is used instead.
             try AudioManager.shared.setPlatformVoiceProcessingAllowed(false)
             AudioManager.shared.capturePostProcessingDelegate = gate
+            // An interruption that never got its .ended could have left the engine parked.
+            try? AudioManager.shared.setEngineAvailability(.default)
             try configureSession()
 
             let details = try await DevelopmentTokenSource(id: sandboxID)
@@ -151,6 +166,7 @@ final class AudioRoomManager: ObservableObject {
         levelTimer?.invalidate()
         levelTimer = nil
         micLevel = 0
+        knownRemoteIDs = nil
         participants = []
         // Tells the game (and other apps) they can take the audio back fully.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -166,16 +182,25 @@ final class AudioRoomManager: ObservableObject {
         guard let rawType, let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
-            // iOS has already paused our audio (e.g. a phone call); nothing to do until it ends.
-            break
+            // iOS stopped our audio (call, Siri, some notification sounds). Park the engine so .ended can restart it;
+            // with automatic session handling off, nothing else restarts it and the room stays silent.
+            guard room != nil else { return }
+            try? AudioManager.shared.setEngineAvailability(.none)
         case .ended:
-            guard let room else { return }
-            // iOS does not reactivate the session for us after an interruption.
-            try? AVAudioSession.sharedInstance().setActive(true)
-            Task { try? await room.localParticipant.setMicrophone(enabled: isMicEnabled) }
+            restartAudio()
         @unknown default:
             break
         }
+    }
+
+    /// Brings the session and LiveKit's engine back after an interruption.
+    private func restartAudio() {
+        guard let room else { return }
+        // iOS does not reactivate the session for us after an interruption.
+        try? configureSession()
+        // Re-enabling honours the pending playout/recording requests, so the engine starts again.
+        try? AudioManager.shared.setEngineAvailability(.default)
+        Task { try? await room.localParticipant.setMicrophone(enabled: isMicEnabled) }
     }
 
     private static func isHeadphoneRoute() -> Bool {
@@ -222,6 +247,25 @@ final class AudioRoomManager: ObservableObject {
                                    isLocal: isLocal,
                                    volume: volume)
         }
+        playJoinLeaveSound()
+    }
+
+    private func playJoinLeaveSound() {
+        let remoteIDs = Set(participants.filter { !$0.isLocal }.map(\.id))
+        defer { knownRemoteIDs = remoteIDs }
+        guard let known = knownRemoteIDs, !isDeafened else { return }
+        let player = !remoteIDs.subtracting(known).isEmpty ? joinSound
+            : !known.subtracting(remoteIDs).isEmpty ? leaveSound : nil
+        player?.currentTime = 0
+        player?.play()
+    }
+
+    private static func loadSound(_ name: String) -> AVAudioPlayer? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav"),
+              let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        player.volume = 0.6
+        player.prepareToPlay()
+        return player
     }
 
     #if DEBUG
