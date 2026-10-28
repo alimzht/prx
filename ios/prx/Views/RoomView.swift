@@ -4,100 +4,178 @@ struct RoomView: View {
     @ObservedObject var manager: AudioRoomManager
     let roomCode: String
 
+    // Обёртка, чтобы .sheet(item:) работал со строковым id.
+    private struct Selection: Identifiable { let id: String }
+    @State private var selected: Selection?
+
+    private var inviteText: String {
+        "Заходи в голосовую комнату prx: код \(roomCode) — prx://join/\(roomCode)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                Text(roomCode)
-                    .font(.title2.bold())
-                    .accessibilityLabel("Room \(roomCode)")
-                if manager.state == .reconnecting {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                        Text("Reconnecting…")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    status
+                    if !manager.headphonesConnected { headphonesWarning }
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 14) {
+                        ForEach(manager.participants) { participant in
+                            ParticipantCard(participant: participant) {
+                                selected = Selection(id: participant.id)
+                            }
+                        }
                     }
+                    Text("Нажми на человека, чтобы сделать его тише или громче")
+                        .font(.footnote)
+                        .foregroundColor(Theme.textMuted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
-                if !manager.headphonesConnected {
-                    Label("Connect headphones — without them your mic picks up game audio", systemImage: "headphones")
-                        .font(.subheadline)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.orange.opacity(0.2))
-                        .cornerRadius(8)
-                }
+                .padding(20)
             }
-            .padding()
-
-            List(manager.participants) { participant in
-                ParticipantRow(participant: participant)
-            }
-            .listStyle(.plain)
-
-            HStack(spacing: 32) {
-                Button {
-                    Task { await manager.setMicEnabled(!manager.isMicEnabled) }
-                } label: {
-                    Image(systemName: manager.isMicEnabled ? "mic.fill" : "mic.slash.fill")
-                        .font(.title2)
-                        .frame(width: 56, height: 56)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(Circle())
-                }
-                .accessibilityLabel(manager.isMicEnabled ? "Mute microphone" : "Unmute microphone")
-
-                Button {
-                    manager.setDeafened(!manager.isDeafened)
-                } label: {
-                    Image(systemName: manager.isDeafened ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.title2)
-                        .frame(width: 56, height: 56)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(Circle())
-                }
-                .accessibilityLabel(manager.isDeafened ? "Undeafen" : "Deafen")
-
-                Button(role: .destructive) {
-                    Task { await manager.leave() }
-                } label: {
-                    Image(systemName: "phone.down.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 56, height: 56)
-                        .background(Color.red)
-                        .clipShape(Circle())
-                }
-                .accessibilityLabel("Leave room")
-            }
-            .padding()
+            controls
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .sheet(item: $selected) { selection in
+            VolumeSheet(manager: manager, participantID: selection.id)
         }
     }
-}
 
-private struct ParticipantRow: View {
-    let participant: ParticipantInfo
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "person.fill")
-                .foregroundColor(.secondary)
-                .frame(width: 36, height: 36)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(Circle())
-                .overlay(Circle().stroke(Color.green, lineWidth: participant.isSpeaking ? 3 : 0))
-                .animation(.easeInOut(duration: 0.15), value: participant.isSpeaking)
-
-            Text(participant.isLocal ? "\(participant.name) (you)" : participant.name)
-
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Комната")
+                    .font(.footnote)
+                    .foregroundColor(Theme.textMuted)
+                Text(roomCode)
+                    .font(Theme.display(26))
+                    .tracking(3)
+                    .foregroundColor(Theme.text)
+            }
+            .accessibilityElement(children: .combine)
             Spacer()
-
-            if participant.isMuted {
-                Image(systemName: "mic.slash.fill")
-                    .foregroundColor(.secondary)
-                    .accessibilityLabel("Muted")
+            ShareLink(item: inviteText) {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundColor(Theme.accent)
+                    Text("Пригласить")
+                        .foregroundColor(Theme.text)
+                }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(Capsule().fill(Theme.surface))
+                .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(participant.isSpeaking ? "Speaking" : "")
+    }
+
+    private var status: some View {
+        let reconnecting = manager.state == .reconnecting
+        return HStack(spacing: 8) {
+            Circle()
+                .fill(reconnecting ? Theme.warning : Theme.accent)
+                .frame(width: 8, height: 8)
+            Text(reconnecting ? "Переподключение…" : "\(Self.participantsLabel(manager.participants.count)) · игра не приглушается")
+                .font(.footnote)
+                .foregroundColor(Theme.textMuted)
+        }
+    }
+
+    private var headphonesWarning: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "headphones")
+                .foregroundColor(Theme.warning)
+                .accessibilityHidden(true)
+            Text("Подключи наушники — без них микрофон будет слышать звук игры")
+                .font(.footnote)
+                .foregroundColor(Theme.text)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .surface(stroke: Theme.warning)
+    }
+
+    private var controls: some View {
+        HStack(spacing: 36) {
+            roundButton(icon: manager.isMicEnabled ? "mic.fill" : "mic.slash.fill",
+                        title: "Микрофон",
+                        iconColor: manager.isMicEnabled ? Theme.text : Theme.danger,
+                        fill: Theme.surface,
+                        a11y: manager.isMicEnabled ? "Выключить микрофон" : "Включить микрофон") {
+                Task { await manager.setMicEnabled(!manager.isMicEnabled) }
+            }
+            roundButton(icon: manager.isDeafened ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                        title: "Звук",
+                        iconColor: manager.isDeafened ? Theme.danger : Theme.text,
+                        fill: Theme.surface,
+                        a11y: manager.isDeafened ? "Включить звук" : "Выключить звук") {
+                manager.setDeafened(!manager.isDeafened)
+            }
+            roundButton(icon: "rectangle.portrait.and.arrow.right",
+                        title: "Выйти",
+                        iconColor: Theme.background,
+                        fill: Theme.danger,
+                        a11y: "Выйти из комнаты") {
+                Task { await manager.leave() }
+            }
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(Theme.background)
+    }
+
+    private func roundButton(icon: String, title: String, iconColor: Color, fill: Color,
+                             a11y: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(iconColor)
+                    .frame(width: 64, height: 64)
+                    .background(Circle().fill(fill))
+                    .overlay(Circle().stroke(Theme.border, lineWidth: fill == Theme.surface ? 1 : 0))
+                Text(title)
+                    .font(.caption)
+                    .foregroundColor(Theme.textMuted)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(a11y)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// 1 участник, 2 участника, 5 участников, 21 участник.
+    static func participantsLabel(_ n: Int) -> String {
+        let mod10 = n % 10, mod100 = n % 100
+        let word: String
+        if mod10 == 1 && mod100 != 11 {
+            word = "участник"
+        } else if (2...4).contains(mod10) && !(12...14).contains(mod100) {
+            word = "участника"
+        } else {
+            word = "участников"
+        }
+        return "\(n) \(word)"
     }
 }
+
+#if DEBUG
+struct RoomView_Previews: PreviewProvider {
+    static var previews: some View {
+        RoomView(manager: .preview(participants: PreviewData.participants), roomCode: "K7Q2XP")
+            .preferredColorScheme(.dark)
+        RoomView(manager: .preview(participants: PreviewData.participants, isMicEnabled: false, headphonesConnected: false),
+                 roomCode: "K7Q2XP")
+            .preferredColorScheme(.dark)
+            .previewDisplayName("Без наушников")
+        RoomView(manager: .preview(participants: PreviewData.participants), roomCode: "K7Q2XP")
+            .preferredColorScheme(.dark)
+            .previewDevice("iPhone SE (3rd generation)")
+            .previewDisplayName("iPhone SE")
+    }
+}
+#endif

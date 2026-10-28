@@ -94,6 +94,22 @@ final class AudioRoomManager: ObservableObject {
         AudioManager.shared.mixer.outputVolume = deafened ? 0 : 1
     }
 
+    /// Per-listener volume for one remote participant (1.0 = 100%, 0…2). Applied immediately and remembered.
+    func setVolume(_ volume: Double, for id: String) {
+        guard let index = participants.firstIndex(where: { $0.id == id }) else { return }
+        let clamped = min(max(volume, 0), 2)
+        participants[index].volume = clamped
+        // Keyed by name: the development token server hands out a new random identity on every join.
+        UserDefaults.standard.set(clamped, forKey: Self.volumeKey(participants[index].name))
+        if let room { refresh(room) }
+    }
+
+    private static func volumeKey(_ name: String) -> String { "volume." + name }
+
+    private static func savedVolume(_ name: String) -> Double {
+        UserDefaults.standard.object(forKey: volumeKey(name)) as? Double ?? 1
+    }
+
     // MARK: - Audio session
 
     private func configureSession() throws {
@@ -173,13 +189,35 @@ final class AudioRoomManager: ObservableObject {
         participants = all.compactMap { p in
             guard let id = p.identity?.stringValue else { return nil }
             let name = p.name.flatMap { $0.isEmpty ? nil : $0 } ?? id
+            let isLocal = p is LocalParticipant
+            let volume = isLocal ? 1 : Self.savedVolume(name)
+            // Reapplied on every refresh so tracks subscribed later also get the saved volume.
+            for track in p.audioTracks.compactMap({ $0.track as? RemoteAudioTrack }) {
+                track.volume = volume
+            }
             return ParticipantInfo(id: id,
                                    name: name,
                                    isSpeaking: speakers.contains(id),
                                    isMuted: !p.isMicrophoneEnabled(),
-                                   isLocal: p is LocalParticipant)
+                                   isLocal: isLocal,
+                                   volume: volume)
         }
     }
+
+    #if DEBUG
+    /// Manager with fixed data for SwiftUI previews; never connects.
+    static func preview(state: State = .connected,
+                        participants: [ParticipantInfo] = [],
+                        isMicEnabled: Bool = true,
+                        headphonesConnected: Bool = true) -> AudioRoomManager {
+        let manager = AudioRoomManager()
+        manager.state = state
+        manager.participants = participants
+        manager.isMicEnabled = isMicEnabled
+        manager.headphonesConnected = headphonesConnected
+        return manager
+    }
+    #endif
 }
 
 struct ParticipantInfo: Identifiable, Equatable {
@@ -188,6 +226,7 @@ struct ParticipantInfo: Identifiable, Equatable {
     var isSpeaking: Bool
     var isMuted: Bool
     let isLocal: Bool
+    var volume: Double = 1  // 1.0 = 100%, 0…2; always 1 for the local participant
 }
 
 /// Forwards the RoomDelegate events that change `state` or `participants`. Called on SDK threads.
@@ -208,4 +247,5 @@ private final class RoomObserver: NSObject, RoomDelegate, @unchecked Sendable {
     func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication) { onChange(room) }
     func room(_ room: Room, participant: RemoteParticipant, didPublishTrack publication: RemoteTrackPublication) { onChange(room) }
     func room(_ room: Room, participant: RemoteParticipant, didUnpublishTrack publication: RemoteTrackPublication) { onChange(room) }
+    func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) { onChange(room) }
 }

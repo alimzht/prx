@@ -38,4 +38,9 @@ targets:
         NSMicrophoneUsageDescription: prx uses the microphone so your friends can hear you while you play.
         UILaunchScreen: {}
         LKSandboxID: $(LK_SANDBOX_ID)
+        UIAppFonts: [SpaceGrotesk-Bold.ttf]
+        UIUserInterfaceStyle: Dark
+        CFBundleURLTypes:
+          - CFBundleURLName: com.alimzht.prx
+            CFBundleURLSchemes: [prx]
     scheme: {} # generates a shared scheme named "prx" for xcodebuild -scheme prx
