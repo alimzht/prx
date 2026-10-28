@@ -10,6 +10,7 @@ struct RoomView: View {
     @State private var selected: Selection?
     @State private var isRenaming = false
     @State private var newRoomName = ""
+    @State private var showAudioLog = false
 
     private var roomName: String { store.displayName(for: roomCode) }
 
@@ -81,8 +82,15 @@ struct RoomView: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(roomName), код \(roomCode)")
-            .accessibilityHint("Переименовать комнату")
+            .accessibilityHint("Переименовать комнату. Удерживай для журнала аудио")
             .accessibilityAddTraits(.isButton)
+            // Журнал спрятан в долгое нажатие: он нужен только для отправки багов.
+            .contextMenu {
+                Button {
+                    showAudioLog = true
+                } label: { Label("Журнал аудио", systemImage: "doc.text") }
+            }
+            .sheet(isPresented: $showAudioLog) { audioLogSheet }
             Spacer()
             ShareLink(item: inviteText) {
                 HStack(spacing: 6) {
@@ -98,6 +106,35 @@ struct RoomView: View {
                 .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
             }
         }
+    }
+
+    private var audioLogSheet: some View {
+        let text = manager.audioLog.joined(separator: "\n")
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Журнал аудио")
+                    .font(.title3.weight(.semibold))
+                    .foregroundColor(Theme.text)
+                Spacer()
+                ShareLink(item: text.isEmpty ? "Журнал пуст" : text) {
+                    Label("Отправить", systemImage: "square.and.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(Theme.accent)
+                        .frame(minHeight: 44)
+                }
+            }
+            ScrollView {
+                Text(text.isEmpty ? "Пока ничего не произошло." : text)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(Theme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(20)
+        .background(Theme.surface.ignoresSafeArea())
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     private var status: some View {

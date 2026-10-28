@@ -15,10 +15,13 @@ final class AudioRoomManager: ObservableObject {
     @Published private(set) var micLevel: Float = 0                    // own mic level 0…1, before the gate
     // WebRTC noise suppression + high-pass filter + adaptive gate, all switched together. Remembered between launches.
     @Published private(set) var isNoiseReductionEnabled = UserDefaults.standard.object(forKey: "noiseReduction") as? Bool ?? true
+    // Last audio events (interruptions, route changes, restarts) so a user without Xcode can send them in.
+    @Published private(set) var audioLog: [String] = []
 
     private var room: Room?
     private let gate = NoiseGate()
     private var levelTimer: Timer?
+    private var engineDownTicks = 0
     // nil until the first refresh in a room, so joining a room full of people doesn't chime.
     private var knownRemoteIDs: Set<String>?
     // AVAudioPlayer, not system sounds: those are muted by the silent switch, which gamers often have on.
@@ -34,18 +37,20 @@ final class AudioRoomManager: ObservableObject {
         gate.isEnabled = isNoiseReductionEnabled
         let center = NotificationCenter.default
         // The manager lives for the whole app, so these observers are never removed.
-        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.handleRouteChange() }
+        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor [weak self] in self?.handleRouteChange(reason) }
         }
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let rawType = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            Task { @MainActor [weak self] in self?.handleInterruption(rawType) }
+            let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+            Task { @MainActor [weak self] in self?.handleInterruption(rawType, reason: reason) }
         }
         // iOS doesn't always post .ended; opening the app again is the fallback that brings sound back.
         center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.room != nil, !AudioManager.shared.isEngineRunning else { return }
-                self.restartAudio()
+                self.restartAudio("app opened, engine stopped")
             }
         }
     }
@@ -80,6 +85,7 @@ final class AudioRoomManager: ObservableObject {
             }
             guard self.room === room else { return } // leave() was called while joining
             state = .connected
+            log("joined \(code) \(Self.describeRoute())")
             startLevelTimer()
             refresh(room)
         } catch {
@@ -189,8 +195,38 @@ final class AudioRoomManager: ObservableObject {
                 guard let self else { return }
                 let level = self.isMicEnabled ? self.gate.level : 0
                 if abs(level - self.micLevel) > 0.02 { self.micLevel = level }
+                self.checkEngine()
             }
         }
+    }
+
+    // Watchdog: route flips (e.g. Siri announcing a message switches AirPods to HFP and back) can stop the engine
+    // without any interruption. If it should be running but has been down for 2 s, restart it whatever the cause.
+    private func checkEngine() {
+        let shouldRun = state == .connected && (isMicEnabled || participants.count > 1)
+        guard shouldRun, !AudioManager.shared.isEngineRunning else {
+            engineDownTicks = 0
+            return
+        }
+        engineDownTicks += 1
+        if engineDownTicks >= 20 {
+            engineDownTicks = 0
+            restartAudio("watchdog: engine stopped")
+        }
+    }
+
+    private func log(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        audioLog.append("\(formatter.string(from: Date())) \(message)")
+        if audioLog.count > 100 { audioLog.removeFirst(audioLog.count - 100) }
+    }
+
+    private static func describeRoute() -> String {
+        let route = AVAudioSession.sharedInstance().currentRoute
+        let outs = route.outputs.map(\.portType.rawValue).joined(separator: ",")
+        let ins = route.inputs.map(\.portType.rawValue).joined(separator: ",")
+        return "out=[\(outs)] in=[\(ins)]"
     }
 
     private func tearDown() {
@@ -203,34 +239,44 @@ final class AudioRoomManager: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func handleRouteChange() {
-        // iOS can switch input on a route change (e.g. headset plugged in), so pick the mic again.
-        if room != nil { preferMic() }
+    private func handleRouteChange(_ reason: UInt?) {
         headphonesConnected = Self.isHeadphoneRoute()
+        guard room != nil else { return }
+        log("route change reason=\(reason.map(String.init) ?? "?") \(Self.describeRoute())")
+        // iOS can switch input on a route change (e.g. headset plugged in), so pick the mic again.
+        preferMic()
     }
 
-    private func handleInterruption(_ rawType: UInt?) {
+    private func handleInterruption(_ rawType: UInt?, reason: UInt?) {
         guard let rawType, let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        guard room != nil else { return }
         switch type {
         case .began:
+            log("interruption began reason=\(reason.map(String.init) ?? "?")")
             // iOS stopped our audio (call, Siri, some notification sounds). Park the engine so .ended can restart it;
             // with automatic session handling off, nothing else restarts it and the room stays silent.
-            guard room != nil else { return }
             try? AudioManager.shared.setEngineAvailability(.none)
         case .ended:
-            restartAudio()
+            restartAudio("interruption ended")
         @unknown default:
             break
         }
     }
 
-    /// Brings the session and LiveKit's engine back after an interruption.
-    private func restartAudio() {
+    /// Brings the session and LiveKit's engine back after an interruption or a stopped engine.
+    private func restartAudio(_ why: String) {
         guard let room else { return }
-        // iOS does not reactivate the session for us after an interruption.
-        try? configureSession()
+        // iOS does not reactivate the session for us after an interruption. If it still refuses (a phone call
+        // is in progress), leave the engine parked; the watchdog tries again later.
+        do {
+            try configureSession()
+        } catch {
+            log("restart (\(why)) failed: \(error.localizedDescription)")
+            return
+        }
         // Re-enabling honours the pending playout/recording requests, so the engine starts again.
         try? AudioManager.shared.setEngineAvailability(.default)
+        log("restart (\(why)) \(Self.describeRoute())")
         Task { try? await room.localParticipant.setMicrophone(enabled: isMicEnabled, captureOptions: captureOptions) }
     }
 
