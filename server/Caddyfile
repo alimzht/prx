@@ -1,0 +1,9 @@
+# Caddy gets and renews the Let's Encrypt certificate for LK_DOMAIN automatically.
+{$LK_DOMAIN} {
+	handle /token {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle {
+		reverse_proxy 127.0.0.1:7880
+	}
+}

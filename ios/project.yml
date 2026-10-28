@@ -12,6 +12,7 @@ packages:
 settings:
   base:
     LK_SANDBOX_ID: ""
+    LK_TOKEN_URL: ""
 
 targets:
   prx:
@@ -38,6 +39,7 @@ targets:
         NSMicrophoneUsageDescription: prx uses the microphone so your friends can hear you while you play.
         UILaunchScreen: {}
         LKSandboxID: $(LK_SANDBOX_ID)
+        LKTokenURL: $(LK_TOKEN_URL)
         UIAppFonts: [SpaceGrotesk-Bold.ttf]
         UIUserInterfaceStyle: Dark
         CFBundleURLTypes:

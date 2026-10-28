@@ -57,10 +57,14 @@ final class AudioRoomManager: ObservableObject {
 
     func join(code: String, name: String) async {
         guard room == nil else { return }
-        let sandboxID = (Bundle.main.object(forInfoDictionaryKey: "LKSandboxID") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !sandboxID.isEmpty else {
-            state = .failed("LiveKit token server ID is missing (Info.plist key LKSandboxID).")
+        // Own token server (self-hosted LiveKit, server/) wins; LiveKit Cloud's development token server is the fallback.
+        let tokenSource: any TokenSourceConfigurable
+        if let url = URL(string: Self.infoString("LKTokenURL")), url.scheme == "https" {
+            tokenSource = TokenServer(url: url)
+        } else if !Self.infoString("LKSandboxID").isEmpty {
+            tokenSource = DevelopmentTokenSource(id: Self.infoString("LKSandboxID"))
+        } else {
+            state = .failed("No token server configured (Info.plist keys LKTokenURL / LKSandboxID).")
             return
         }
 
@@ -77,8 +81,7 @@ final class AudioRoomManager: ObservableObject {
             try? AudioManager.shared.setEngineAvailability(.default)
             try configureSession()
 
-            let details = try await DevelopmentTokenSource(id: sandboxID)
-                .fetch(TokenRequestOptions(roomName: code, participantName: name))
+            let details = try await tokenSource.fetch(TokenRequestOptions(roomName: code, participantName: name))
             try await room.connect(url: details.serverURL.absoluteString, token: details.participantToken)
             if isMicEnabled {
                 try await room.localParticipant.setMicrophone(enabled: true, captureOptions: captureOptions)
@@ -156,6 +159,10 @@ final class AudioRoomManager: ObservableObject {
         // Keyed by name: the development token server hands out a new random identity on every join.
         UserDefaults.standard.set(clamped, forKey: Self.volumeKey(participants[index].name))
         if let room { refresh(room) }
+    }
+
+    private static func infoString(_ key: String) -> String {
+        (Bundle.main.object(forInfoDictionaryKey: key) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private static func volumeKey(_ name: String) -> String { "volume." + name }
@@ -391,4 +398,9 @@ private final class RoomObserver: NSObject, RoomDelegate, @unchecked Sendable {
     func room(_ room: Room, participant: RemoteParticipant, didPublishTrack publication: RemoteTrackPublication) { onChange(room) }
     func room(_ room: Room, participant: RemoteParticipant, didUnpublishTrack publication: RemoteTrackPublication) { onChange(room) }
     func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) { onChange(room) }
+}
+
+/// Our own token endpoint (server/token); speaks the JSON format EndpointTokenSource expects.
+private struct TokenServer: EndpointTokenSource {
+    let url: URL
 }

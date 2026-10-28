@@ -1,0 +1,12 @@
+{
+  "name": "prx-token",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "livekit-server-sdk": "2.19.2"
+  }
+}

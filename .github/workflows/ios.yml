@@ -29,6 +29,7 @@ jobs:
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             LK_SANDBOX_ID="${{ secrets.LK_SANDBOX_ID }}" \
+            LK_TOKEN_URL="${{ secrets.LK_TOKEN_URL }}" \
             build
 
       - name: Package IPA

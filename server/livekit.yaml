@@ -1,0 +1,14 @@
+# API keys come from LIVEKIT_KEYS in docker-compose (.env), not from this file.
+port: 7880
+bind_addresses: ["127.0.0.1"]   # signaling is reached only through Caddy (HTTPS)
+rtc:
+  tcp_port: 7881                # fallback when UDP is blocked
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: true         # advertise the VPS public IP to clients
+room:
+  max_participants: 10
+  empty_timeout: 300
+logging:
+  level: info
+# shortcut: no TURN server, so networks that block both UDP and TCP 7881 can't connect; add turn: when that happens.

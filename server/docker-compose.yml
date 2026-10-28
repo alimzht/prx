@@ -1,0 +1,35 @@
+# Self-hosted LiveKit + token server + HTTPS on one VPS. Setup steps: server/README.md
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: --config /etc/livekit.yaml
+    # Host network: WebRTC needs the whole UDP range, and Docker port mapping of 10k ports is slow.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  token:
+    build: ./token
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_URL: wss://${LK_DOMAIN}
+      PORT: "3000"
+
+  caddy:
+    image: caddy:2.11
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LK_DOMAIN: ${LK_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data   # TLS certificates; keep them or Let's Encrypt rate limits you
+
+volumes:
+  caddy_data:
