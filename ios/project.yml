@@ -1,0 +1,41 @@
+name: prx
+
+options:
+  deploymentTarget:
+    iOS: "16.0"
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    from: 2.19.0
+
+settings:
+  base:
+    LK_SANDBOX_ID: ""
+
+targets:
+  prx:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - prx
+    dependencies:
+      - package: LiveKit
+        product: LiveKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.alimzht.prx
+        PRODUCT_NAME: prx
+        SWIFT_VERSION: "5.0" # Swift 5 language mode; compiler is whatever Xcode ships (5.9+)
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: prx/Info.plist
+      properties:
+        CFBundleDisplayName: prx
+        UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: prx uses the microphone so your friends can hear you while you play.
+        UILaunchScreen: {}
+        LKSandboxID: $(LK_SANDBOX_ID)
+    scheme: {} # generates a shared scheme named "prx" for xcodebuild -scheme prx
