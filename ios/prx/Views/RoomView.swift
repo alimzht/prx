@@ -2,14 +2,19 @@ import SwiftUI
 
 struct RoomView: View {
     @ObservedObject var manager: AudioRoomManager
+    @ObservedObject var store: RoomStore
     let roomCode: String
 
     // Обёртка, чтобы .sheet(item:) работал со строковым id.
     private struct Selection: Identifiable { let id: String }
     @State private var selected: Selection?
+    @State private var isRenaming = false
+    @State private var newRoomName = ""
+
+    private var roomName: String { store.displayName(for: roomCode) }
 
     private var inviteText: String {
-        "Заходи в голосовую комнату prx: код \(roomCode) — prx://join/\(roomCode)"
+        "Заходи в голосовую комнату «\(roomName)» в prx: код \(roomCode) — \(store.inviteURL(for: roomCode))"
     }
 
     var body: some View {
@@ -41,20 +46,43 @@ struct RoomView: View {
         .sheet(item: $selected) { selection in
             VolumeSheet(manager: manager, participantID: selection.id)
         }
+        .alert("Название комнаты", isPresented: $isRenaming) {
+            TextField("Например, Сквад", text: $newRoomName)
+            Button("Сохранить") { store.rename(code: roomCode, to: newRoomName) }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Друзья увидят его, когда откроют твоё приглашение.")
+        }
     }
 
     private var header: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Комната")
-                    .font(.footnote)
-                    .foregroundColor(Theme.textMuted)
-                Text(roomCode)
-                    .font(Theme.display(26))
-                    .tracking(3)
-                    .foregroundColor(Theme.text)
+            Button {
+                newRoomName = store.rooms.first { $0.code == roomCode }?.name ?? ""
+                isRenaming = true
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(roomName)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundColor(Theme.textMuted)
+                            .lineLimit(1)
+                        Image(systemName: "pencil")
+                            .font(.caption)
+                            .foregroundColor(Theme.textMuted)
+                    }
+                    Text(roomCode)
+                        .font(Theme.display(26))
+                        .tracking(3)
+                        .foregroundColor(Theme.text)
+                }
+                .frame(minHeight: 44)
             }
-            .accessibilityElement(children: .combine)
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(roomName), код \(roomCode)")
+            .accessibilityHint("Переименовать комнату")
+            .accessibilityAddTraits(.isButton)
             Spacer()
             ShareLink(item: inviteText) {
                 HStack(spacing: 6) {
@@ -167,13 +195,13 @@ struct RoomView: View {
 #if DEBUG
 struct RoomView_Previews: PreviewProvider {
     static var previews: some View {
-        RoomView(manager: .preview(participants: PreviewData.participants), roomCode: "K7Q2XP")
+        RoomView(manager: .preview(participants: PreviewData.participants), store: .preview(), roomCode: "K7Q2XP")
             .preferredColorScheme(.dark)
         RoomView(manager: .preview(participants: PreviewData.participants, isMicEnabled: false, headphonesConnected: false),
-                 roomCode: "K7Q2XP")
+                 store: .preview(), roomCode: "K7Q2XP")
             .preferredColorScheme(.dark)
             .previewDisplayName("Без наушников")
-        RoomView(manager: .preview(participants: PreviewData.participants), roomCode: "K7Q2XP")
+        RoomView(manager: .preview(participants: PreviewData.participants), store: .preview(), roomCode: "K7Q2XP")
             .preferredColorScheme(.dark)
             .previewDevice("iPhone SE (3rd generation)")
             .previewDisplayName("iPhone SE")

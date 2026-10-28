@@ -2,8 +2,13 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject var manager: AudioRoomManager
+    @ObservedObject var store: RoomStore
     @Binding var code: String
     @AppStorage("displayName") private var name = ""
+
+    // Переименование из списка «Мои комнаты».
+    @State private var renaming: SavedRoom?
+    @State private var newRoomName = ""
 
     // Какая кнопка нажата — на ней крутится индикатор.
     @State private var pending: Action?
@@ -35,12 +40,22 @@ struct HomeView: View {
                         .font(.footnote)
                         .foregroundColor(Theme.danger)
                 }
+                if !store.rooms.isEmpty { savedRooms }
                 linkHint
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 32)
         }
         .background(Theme.background.ignoresSafeArea())
+        .alert("Название комнаты", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Например, Сквад", text: $newRoomName)
+            Button("Сохранить") {
+                if let room = renaming { store.rename(code: room.code, to: newRoomName) }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Видно только у тебя и у тех, кому отправишь приглашение после переименования.")
+        }
         .onChange(of: manager.state) { state in
             if state != .connecting { pending = nil }
         }
@@ -159,6 +174,55 @@ struct HomeView: View {
         }
     }
 
+    private var savedRooms: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Мои комнаты")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(Theme.textMuted)
+            ForEach(store.rooms) { room in
+                Button {
+                    // Не через .disabled: он отключил бы и меню переименования.
+                    guard canCreate else { return }
+                    code = room.code
+                    join(room.code, as: .join)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(room.displayName)
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(Theme.text)
+                                .lineLimit(1)
+                            Text(room.code)
+                                .font(Theme.display(14, relativeTo: .footnote))
+                                .tracking(2)
+                                .foregroundColor(Theme.textMuted)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(Theme.accent)
+                            .accessibilityHidden(true)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 60)
+                    .surface(radius: 16)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(room.displayName), код \(room.code)")
+                .accessibilityHint("Войти. Удерживай, чтобы переименовать или удалить")
+                .contextMenu {
+                    Button {
+                        newRoomName = room.name
+                        renaming = room
+                    } label: { Label("Переименовать", systemImage: "pencil") }
+                    Button(role: .destructive) {
+                        store.remove(code: room.code)
+                    } label: { Label("Удалить", systemImage: "trash") }
+                }
+            }
+        }
+    }
+
     private var linkHint: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "link")
@@ -183,9 +247,9 @@ struct HomeView: View {
 #if DEBUG
 struct HomeView_Previews: PreviewProvider {
     static var previews: some View {
-        HomeView(manager: .preview(state: .idle), code: .constant(""))
+        HomeView(manager: .preview(state: .idle), store: .preview(), code: .constant(""))
             .preferredColorScheme(.dark)
-        HomeView(manager: .preview(state: .failed("Не удалось подключиться")), code: .constant("K7Q2XP"))
+        HomeView(manager: .preview(state: .failed("Не удалось подключиться")), store: RoomStore(), code: .constant("K7Q2XP"))
             .preferredColorScheme(.dark)
             .previewDisplayName("Ошибка")
     }
