@@ -127,7 +127,8 @@ struct RoomView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 36) {
+        // 4 × 64 + 3 × 20 помещается в ширину iPhone SE.
+        HStack(spacing: 20) {
             roundButton(icon: manager.isMicEnabled ? "mic.fill" : "mic.slash.fill",
                         title: "Микрофон",
                         iconColor: manager.isMicEnabled ? Theme.text : Theme.danger,
@@ -141,6 +142,13 @@ struct RoomView: View {
                         fill: Theme.surface,
                         a11y: manager.isDeafened ? "Включить звук" : "Выключить звук") {
                 manager.setDeafened(!manager.isDeafened)
+            }
+            roundButton(icon: "waveform",
+                        title: "Шумодав",
+                        iconColor: manager.isNoiseReductionEnabled ? Theme.accent : Theme.textMuted,
+                        fill: Theme.surface,
+                        a11y: manager.isNoiseReductionEnabled ? "Выключить шумоподавление" : "Включить шумоподавление") {
+                Task { await manager.setNoiseReduction(!manager.isNoiseReductionEnabled) }
             }
             roundButton(icon: "rectangle.portrait.and.arrow.right",
                         title: "Выйти",

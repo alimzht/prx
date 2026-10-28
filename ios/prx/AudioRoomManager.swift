@@ -13,6 +13,8 @@ final class AudioRoomManager: ObservableObject {
     @Published private(set) var isDeafened = false                     // all remote audio muted
     @Published private(set) var headphonesConnected = false            // false → UI shows a warning
     @Published private(set) var micLevel: Float = 0                    // own mic level 0…1, before the gate
+    // WebRTC noise suppression + high-pass filter + adaptive gate, all switched together. Remembered between launches.
+    @Published private(set) var isNoiseReductionEnabled = UserDefaults.standard.object(forKey: "noiseReduction") as? Bool ?? true
 
     private var room: Room?
     private let gate = NoiseGate()
@@ -29,6 +31,7 @@ final class AudioRoomManager: ObservableObject {
 
     init() {
         headphonesConnected = Self.isHeadphoneRoute()
+        gate.isEnabled = isNoiseReductionEnabled
         let center = NotificationCenter.default
         // The manager lives for the whole app, so these observers are never removed.
         center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -73,7 +76,7 @@ final class AudioRoomManager: ObservableObject {
                 .fetch(TokenRequestOptions(roomName: code, participantName: name))
             try await room.connect(url: details.serverURL.absoluteString, token: details.participantToken)
             if isMicEnabled {
-                try await room.localParticipant.setMicrophone(enabled: true)
+                try await room.localParticipant.setMicrophone(enabled: true, captureOptions: captureOptions)
             }
             guard self.room === room else { return } // leave() was called while joining
             state = .connected
@@ -100,11 +103,36 @@ final class AudioRoomManager: ObservableObject {
         isMicEnabled = enabled
         guard let room else { return }
         do {
-            try await room.localParticipant.setMicrophone(enabled: enabled)
+            try await room.localParticipant.setMicrophone(enabled: enabled, captureOptions: captureOptions)
         } catch {
             isMicEnabled = room.localParticipant.isMicrophoneEnabled()
         }
         refresh(room)
+    }
+
+    func setNoiseReduction(_ enabled: Bool) async {
+        isNoiseReductionEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "noiseReduction")
+        gate.isEnabled = enabled
+        guard let room,
+              let publication = room.localParticipant.audioTracks
+                .first(where: { $0.source == .microphone }) as? LocalTrackPublication else { return }
+        // Capture options only apply to a new track, so republish the mic (a short gap in your audio).
+        do {
+            try await room.localParticipant.unpublish(publication: publication)
+            if isMicEnabled {
+                try await room.localParticipant.setMicrophone(enabled: true, captureOptions: captureOptions)
+            }
+        } catch {
+            isMicEnabled = room.localParticipant.isMicrophoneEnabled()
+        }
+        refresh(room)
+    }
+
+    /// Echo cancellation and gain control stay on; only noise processing follows the switch.
+    private var captureOptions: AudioCaptureOptions {
+        AudioCaptureOptions(noiseSuppression: isNoiseReductionEnabled,
+                            highpassFilter: isNoiseReductionEnabled)
     }
 
     func setDeafened(_ deafened: Bool) {
@@ -139,14 +167,17 @@ final class AudioRoomManager: ObservableObject {
         // .allowBluetoothA2DP: headphones stay in high-quality A2DP; .allowBluetooth is never set because it enables HFP.
         try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
         try session.setActive(true)
-        preferBuiltInMic()
+        preferMic()
     }
 
-    // A2DP has no microphone, so input must come from the phone's built-in mic.
-    private func preferBuiltInMic() {
+    // A2DP has no microphone. A wired headset or USB mic sits by the mouth, away from screen taps, so it wins;
+    // otherwise the phone's built-in mic. Bluetooth (HFP) mics are never chosen.
+    private func preferMic() {
         let session = AVAudioSession.sharedInstance()
-        guard session.preferredInput?.portType != .builtInMic,
-              let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
+        let inputs = session.availableInputs ?? []
+        guard let mic = inputs.first(where: { $0.portType == .headsetMic || $0.portType == .usbAudio })
+                ?? inputs.first(where: { $0.portType == .builtInMic }),
+              session.preferredInput?.uid != mic.uid else { return }
         try? session.setPreferredInput(mic)
     }
 
@@ -173,8 +204,8 @@ final class AudioRoomManager: ObservableObject {
     }
 
     private func handleRouteChange() {
-        // iOS can switch input on a route change (e.g. headset plugged in), so pin the built-in mic again.
-        if room != nil { preferBuiltInMic() }
+        // iOS can switch input on a route change (e.g. headset plugged in), so pick the mic again.
+        if room != nil { preferMic() }
         headphonesConnected = Self.isHeadphoneRoute()
     }
 
@@ -200,11 +231,11 @@ final class AudioRoomManager: ObservableObject {
         try? configureSession()
         // Re-enabling honours the pending playout/recording requests, so the engine starts again.
         try? AudioManager.shared.setEngineAvailability(.default)
-        Task { try? await room.localParticipant.setMicrophone(enabled: isMicEnabled) }
+        Task { try? await room.localParticipant.setMicrophone(enabled: isMicEnabled, captureOptions: captureOptions) }
     }
 
     private static func isHeadphoneRoute() -> Bool {
-        let headphonePorts: [AVAudioSession.Port] = [.headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
+        let headphonePorts: [AVAudioSession.Port] = [.headphones, .usbAudio, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
         return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
     }
 
