@@ -21,7 +21,8 @@ struct RoomView: View {
                     if !manager.headphonesConnected { headphonesWarning }
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 14) {
                         ForEach(manager.participants) { participant in
-                            ParticipantCard(participant: participant) {
+                            ParticipantCard(participant: participant,
+                                            micLevel: participant.isLocal ? manager.micLevel : nil) {
                                 selected = Selection(id: participant.id)
                             }
                         }

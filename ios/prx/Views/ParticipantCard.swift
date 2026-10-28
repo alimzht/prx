@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ParticipantCard: View {
     let participant: ParticipantInfo
+    var micLevel: Float? = nil // только у своей карточки
     let onTap: () -> Void
 
     private var percent: Int { Int((participant.volume * 100).rounded()) }
@@ -54,6 +55,7 @@ struct ParticipantCard: View {
                 Text("Твой микрофон")
                     .font(.caption)
                     .foregroundColor(Theme.textMuted)
+                if let micLevel { levelMeter(micLevel) }
             } else if percent == 100 {
                 Text("100%")
                     .font(.caption)
@@ -74,6 +76,20 @@ struct ParticipantCard: View {
         }
     }
 
+    /// Полоска уровня своего микрофона: видно, что тебя слышно, без вопросов в чате.
+    private func levelMeter(_ level: Float) -> some View {
+        Capsule()
+            .fill(Theme.border)
+            .frame(width: 72, height: 4)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Theme.accent)
+                    .frame(width: 72 * CGFloat(level), height: 4)
+                    .animation(.linear(duration: 0.1), value: level)
+            }
+            .accessibilityHidden(true)
+    }
+
     private var accessibilityValue: String {
         var parts: [String] = []
         if participant.isSpeaking { parts.append("говорит") }
@@ -87,7 +103,7 @@ struct ParticipantCard: View {
 struct ParticipantCard_Previews: PreviewProvider {
     static var previews: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 14) {
-            ForEach(PreviewData.participants) { ParticipantCard(participant: $0, onTap: {}) }
+            ForEach(PreviewData.participants) { ParticipantCard(participant: $0, micLevel: $0.isLocal ? 0.6 : nil, onTap: {}) }
         }
         .padding(20)
         .background(Theme.background)

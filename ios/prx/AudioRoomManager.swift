@@ -11,8 +11,11 @@ final class AudioRoomManager: ObservableObject {
     @Published private(set) var isMicEnabled = true
     @Published private(set) var isDeafened = false                     // all remote audio muted
     @Published private(set) var headphonesConnected = false            // false → UI shows a warning
+    @Published private(set) var micLevel: Float = 0                    // own mic level 0…1, before the gate
 
     private var room: Room?
+    private let gate = NoiseGate()
+    private var levelTimer: Timer?
     // Room holds its delegates weakly, so we keep the observer alive here.
     private lazy var observer = RoomObserver { [weak self] room in
         Task { @MainActor [weak self] in self?.refresh(room) }
@@ -48,6 +51,7 @@ final class AudioRoomManager: ObservableObject {
             AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
             // Apple voice processing (VPIO) brings back ducking and HFP, so WebRTC's software processing is used instead.
             try AudioManager.shared.setPlatformVoiceProcessingAllowed(false)
+            AudioManager.shared.capturePostProcessingDelegate = gate
             try configureSession()
 
             let details = try await DevelopmentTokenSource(id: sandboxID)
@@ -58,6 +62,7 @@ final class AudioRoomManager: ObservableObject {
             }
             guard self.room === room else { return } // leave() was called while joining
             state = .connected
+            startLevelTimer()
             refresh(room)
         } catch {
             guard self.room === room else { return }
@@ -130,7 +135,22 @@ final class AudioRoomManager: ObservableObject {
         try? session.setPreferredInput(mic)
     }
 
+    // The gate measures on the audio thread; the UI polls it at 10 Hz instead of being pushed every 10 ms.
+    private func startLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let level = self.isMicEnabled ? self.gate.level : 0
+                if abs(level - self.micLevel) > 0.02 { self.micLevel = level }
+            }
+        }
+    }
+
     private func tearDown() {
+        levelTimer?.invalidate()
+        levelTimer = nil
+        micLevel = 0
         participants = []
         // Tells the game (and other apps) they can take the audio back fully.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -209,12 +229,14 @@ final class AudioRoomManager: ObservableObject {
     static func preview(state: State = .connected,
                         participants: [ParticipantInfo] = [],
                         isMicEnabled: Bool = true,
-                        headphonesConnected: Bool = true) -> AudioRoomManager {
+                        headphonesConnected: Bool = true,
+                        micLevel: Float = 0.6) -> AudioRoomManager {
         let manager = AudioRoomManager()
         manager.state = state
         manager.participants = participants
         manager.isMicEnabled = isMicEnabled
         manager.headphonesConnected = headphonesConnected
+        manager.micLevel = micLevel
         return manager
     }
     #endif
